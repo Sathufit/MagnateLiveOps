@@ -1,37 +1,43 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { PORTS, ROLE_LABEL, ROLE_SEES } from '../../shared/domain.ts';
-import type { BoardView } from '../../shared/domain.ts';
 import { DelayTable, DeliveryList, DocumentList, EtaPanel, FeedList, LT, PartiesList, PhaseTrack, ReadinessList, StatusStrip, opSubtitle } from '../components/board.tsx';
 import { FullMessage, Icon, LiveBadge, Panel, ThemeToggle, Wordmark } from '../components/ui.tsx';
 import { ApiError, api } from '../lib/api.ts';
-import { useNow, useStream } from '../lib/hooks.ts';
+import type { LiveView } from '../lib/api.ts';
+import { useLiveSync, useNow } from '../lib/hooks.ts';
 
-/** Loads a share link's view and keeps it current over the live stream. */
+/** Loads a share link's view and keeps it current. */
 export function useLiveView(token: string | undefined) {
-  const [view, setView] = useState<BoardView | null>(null);
+  const [view, setView] = useState<LiveView | null>(null);
   const [gone, setGone] = useState(false);
   const [failed, setFailed] = useState(false);
+  const version = useRef<number | undefined>(undefined);
 
-  const load = useCallback(
-    (open: boolean) => {
-      if (!token) return;
-      api.live(token, open).then(
-        (v) => {
-          setView(v);
-          setFailed(false);
-        },
-        (err: unknown) => {
-          if (err instanceof ApiError && err.status === 404) setGone(true);
-          else setFailed(true);
-        },
-      );
+  const check = useCallback(
+    async (initial: boolean) => {
+      if (!token) return false;
+      try {
+        const result = await api.live(token, initial, version.current);
+        if (!('unchanged' in result)) {
+          version.current = result.op.version;
+          setView(result);
+        }
+        setFailed(false);
+        return true;
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          setGone(true);
+          return true;
+        }
+        setFailed(true);
+        return false;
+      }
     },
     [token],
   );
 
-  useEffect(() => load(true), [load]);
-  const stream = useStream(token && !gone ? `/api/live/${token}/stream` : null, () => load(false));
+  const stream = useLiveSync(check, view?.channel, !!token && !gone);
   return { view, gone, failed, stream };
 }
 

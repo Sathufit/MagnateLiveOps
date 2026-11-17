@@ -21,7 +21,7 @@ import {
   rolesWith,
 } from '../shared/domain.ts';
 import type { FeedEntry, FeedKind, Grade, MilestoneKey, Operation, Parties, Role } from '../shared/domain.ts';
-import { newId, newToken } from './store.ts';
+import { newId, newToken } from './ids.ts';
 
 export class ActionError extends Error {}
 
@@ -268,7 +268,7 @@ export function applyAction(op: Operation, a: Input, actor: string, now: string)
     }
     case 'link.rotate': {
       const role = oneOf(a.role, ROLES, 'Party') as Role;
-      op.links[role] = { token: newToken(), enabled: true, opens: 0 };
+      op.links[role] = { token: newToken(), enabled: true };
       break;
     }
     case 'link.toggle': {
@@ -298,7 +298,7 @@ export function createOperation(a: Input, ref: string, actor: string, now: strin
     documents: DEFAULT_DOCUMENTS.map((name) => ({ id: newId(), name, state: 'pending', ref: '' })),
     feed: [],
     remarks: '',
-    links: Object.fromEntries(ROLES.map((r) => [r, { token: newToken(), enabled: true, opens: 0 }])),
+    links: Object.fromEntries(ROLES.map((r) => [r, { token: newToken(), enabled: true }])),
     grades: [],
   } as unknown as Operation;
 

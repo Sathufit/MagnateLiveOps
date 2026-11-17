@@ -1,17 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Link, Outlet, useNavigate } from 'react-router';
+import { Link, Outlet, useNavigate, useOutletContext } from 'react-router';
 import { PORTS, PORT_NAMES, delayStatus, fmtDateTime, fmtLongDay, fmtTime, latestEta, milestoneAt, projectView, statusLine } from '../../shared/domain.ts';
 import type { Operation } from '../../shared/domain.ts';
 import { LT, MiniTrack, delayHeadline, opSubtitle } from '../components/board.tsx';
 import { OperationForm } from '../components/OperationForm.tsx';
 import { Dialog, Field, Icon, ThemeToggle, Wordmark } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
-import { fmtAgo, useNow, useStream } from '../lib/hooks.ts';
+import type { Staff } from '../lib/api.ts';
+import { fmtAgo, useLiveSync, useNow } from '../lib/hooks.ts';
+
+/** Shared with the pages inside the console shell. */
+export interface DeskContext {
+  channel: string | null;
+}
+export const useDesk = () => useOutletContext<DeskContext>();
 
 /* ───────────── Sign in ───────────── */
 
-export function SignIn({ onSignedIn }: { onSignedIn: (name: string) => void }) {
+export function SignIn({ onSignedIn }: { onSignedIn: (staff: Staff) => void }) {
   const [name, setName] = useState(() => localStorage.getItem('mlo-operator') ?? '');
   const [passcode, setPasscode] = useState('');
   const [error, setError] = useState('');
@@ -23,8 +30,8 @@ export function SignIn({ onSignedIn }: { onSignedIn: (name: string) => void }) {
     setError('');
     try {
       const res = await api.login(name, passcode);
-      localStorage.setItem('mlo-operator', res.name);
-      onSignedIn(res.name);
+      localStorage.setItem('mlo-operator', res.name ?? name);
+      onSignedIn(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign in failed.');
       setBusy(false);
@@ -89,7 +96,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: (name: string) => void }) {
 
 /* ───────────── Console shell ───────────── */
 
-export function ConsoleShell({ staff, onSignOut }: { staff: string; onSignOut: () => void }) {
+export function ConsoleShell({ staff, channel, onSignOut }: { staff: string; channel: string | null; onSignOut: () => void }) {
   return (
     <div className="console">
       <header className="topbar">
@@ -107,7 +114,7 @@ export function ConsoleShell({ staff, onSignOut }: { staff: string; onSignOut: (
           </div>
         </div>
       </header>
-      <Outlet />
+      <Outlet context={{ channel } satisfies DeskContext} />
     </div>
   );
 }
@@ -125,11 +132,12 @@ export function OpsList() {
   const navigate = useNavigate();
   const now = useNow();
 
-  const load = useCallback(() => {
-    api.ops().then((r) => setOps(r.ops), () => undefined);
+  const { channel } = useDesk();
+  const check = useCallback(async () => {
+    setOps((await api.ops()).ops);
+    return true;
   }, []);
-  useEffect(load, [load]);
-  useStream('/api/ops/stream', load);
+  useLiveSync(check, channel);
   useEffect(() => {
     document.title = 'Operations · Magnate LiveOps';
   }, []);

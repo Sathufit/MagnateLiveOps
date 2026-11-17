@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { api } from './api.ts';
 
 /** Current time, re-rendering on an interval so countdowns stay honest. */
 export function useNow(intervalMs = 30_000): number {
@@ -12,45 +13,108 @@ export function useNow(intervalMs = 30_000): number {
 
 export type StreamState = 'connecting' | 'live' | 'reconnecting';
 
+// How often an open page re-checks the server. With Supabase Realtime connected,
+// changes are pushed and the timer is only a safety net.
+const LOCAL = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+const CHECK_MS = LOCAL ? 3_000 : 8_000;
+const CHECK_WITH_PUSH_MS = 20_000;
+
+type Realtime = import('@supabase/supabase-js').SupabaseClient;
+let realtime: Promise<Realtime | null> | undefined;
+
+/** The Supabase client, loaded only when the server says Realtime is configured. */
+function getRealtime(): Promise<Realtime | null> {
+  realtime ??= api
+    .config()
+    .then(async ({ realtime: cfg }) => {
+      if (!cfg) return null;
+      const { createClient } = await import('@supabase/supabase-js');
+      return createClient(cfg.url, cfg.key, { auth: { persistSession: false, autoRefreshToken: false } });
+    })
+    .catch(() => null);
+  return realtime;
+}
+
 /**
- * Subscribes to a server-sent event stream. `onMessage` is also called when the
- * connection is re-established or the tab becomes visible again, since updates
- * may have been missed in between.
+ * Keeps a page current. `check(initial)` fetches the latest state and resolves
+ * to whether the server was reachable. It runs once at start, then on a timer
+ * while the tab is visible, when the tab is shown again, and immediately when
+ * a change is announced on `channel`.
  */
-export function useStream(url: string | null, onMessage: (data: unknown) => void): StreamState {
+export function useLiveSync(check: (initial: boolean) => Promise<boolean>, channel: string | null | undefined, enabled = true): StreamState {
   const [state, setState] = useState<StreamState>('connecting');
-  const handler = useRef(onMessage);
-  handler.current = onMessage;
+  const fn = useRef(check);
+  fn.current = check;
+  const pushed = useRef(false);
+  const run = useRef<(initial?: boolean) => Promise<void>>(async () => undefined);
 
   useEffect(() => {
-    if (!url) return;
-    let dropped = false;
-    const source = new EventSource(url);
-    source.onopen = () => {
-      setState('live');
-      if (dropped) handler.current(null);
-      dropped = false;
-    };
-    source.onerror = () => {
-      dropped = true;
-      setState('reconnecting');
-    };
-    source.onmessage = (e) => {
-      try {
-        handler.current(JSON.parse(e.data));
-      } catch {
-        handler.current(null);
+    if (!enabled) return;
+    let stopped = false;
+    let busy = false;
+    let timer: number | undefined;
+
+    let again = false;
+    run.current = async (initial = false) => {
+      if (stopped) return;
+      if (busy) {
+        // A change was announced while a check was in flight; that check may
+        // have read the older copy, so look once more when it returns.
+        again = true;
+        return;
+      }
+      busy = true;
+      const ok = await fn.current(initial).catch(() => false);
+      busy = false;
+      if (stopped) return;
+      setState(ok ? 'live' : 'reconnecting');
+      if (again) {
+        again = false;
+        void run.current();
       }
     };
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') handler.current(null);
+    const schedule = () => {
+      timer = window.setTimeout(async () => {
+        if (document.visibilityState === 'visible') await run.current();
+        if (!stopped) schedule();
+      }, pushed.current ? CHECK_WITH_PUSH_MS : CHECK_MS);
     };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void run.current();
+    };
+
+    void run.current(true);
+    schedule();
     document.addEventListener('visibilitychange', onVisible);
     return () => {
-      source.close();
+      stopped = true;
+      window.clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [url]);
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled || !channel) return;
+    let cancelled = false;
+    let leave = () => undefined as void;
+    void getRealtime().then((client) => {
+      if (!client || cancelled) return;
+      const subscription = client
+        .channel(channel)
+        .on('broadcast', { event: 'changed' }, () => void run.current())
+        .subscribe((status) => {
+          pushed.current = status === 'SUBSCRIBED';
+        });
+      leave = () => {
+        pushed.current = false;
+        void client.removeChannel(subscription);
+      };
+    });
+    return () => {
+      cancelled = true;
+      leave();
+    };
+  }, [channel, enabled]);
 
   return state;
 }

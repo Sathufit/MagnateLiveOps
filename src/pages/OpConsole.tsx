@@ -16,6 +16,7 @@ import {
   ROLES,
   ROLE_LABEL,
   ROLE_SEES,
+  VIEWING_WINDOW_MS,
   fmtDateTime,
   fromLTInput,
   latestEta,
@@ -30,7 +31,8 @@ import { OperationForm } from '../components/OperationForm.tsx';
 import { Dialog, Field, FullMessage, Icon, Panel } from '../components/ui.tsx';
 import { ApiError, api } from '../lib/api.ts';
 import type { Action, OpDetail } from '../lib/api.ts';
-import { fmtAgo, useCopy, useNow, useStream } from '../lib/hooks.ts';
+import { fmtAgo, useCopy, useLiveSync, useNow } from '../lib/hooks.ts';
+import { useDesk } from './Console.tsx';
 
 type Act = (action: Action) => Promise<boolean>;
 
@@ -285,7 +287,7 @@ function MilestoneControl({ op, act }: { op: Operation; act: Act }) {
 /* ───────────── Share links ───────────── */
 
 function ShareLinks({ detail, act, now }: { detail: OpDetail; act: Act; now: number }) {
-  const { op, watching } = detail;
+  const { op, links } = detail;
   const [copied, copy] = useCopy();
   const url = (role: Role) => `${window.location.origin}/live/${op.links[role].token}`;
   const invite = (role: Role) => `${op.vessel.name} bunker operation at ${op.port}: follow live status here ${url(role)} (Magnate Shipping, ref ${op.ref})`;
@@ -295,20 +297,22 @@ function ShareLinks({ detail, act, now }: { detail: OpDetail; act: Act; now: num
       <ul className="rows links">
         {ROLES.map((role) => {
           const link = op.links[role];
+          const stats = links[role];
+          const viewing = link.enabled && !!stats.lastSeenAt && now - Date.parse(stats.lastSeenAt) < VIEWING_WINDOW_MS;
           return (
             <li key={role} className={link.enabled ? '' : 'off'}>
               <div className="row-main">
                 <span className="row-title">
                   {ROLE_LABEL[role]}
-                  {watching[role] > 0 && (
+                  {viewing && (
                     <span className="watching">
                       <i aria-hidden="true" />
-                      {watching[role]} viewing
+                      Viewing now
                     </span>
                   )}
                 </span>
                 <span className="row-sub" title={`Sees: ${ROLE_SEES[role]}`}>
-                  {!link.enabled ? 'Link switched off' : link.lastOpenedAt ? `Opened ${link.opens}×, last ${fmtAgo(link.lastOpenedAt, now)}` : 'Not opened yet'}
+                  {!link.enabled ? 'Link switched off' : stats.lastOpenedAt ? `Opened ${stats.opens}×, last ${fmtAgo(stats.lastOpenedAt, now)}` : 'Not opened yet'}
                 </span>
               </div>
               <div className="row-actions">
@@ -483,16 +487,23 @@ export default function OpConsole() {
   const [editing, setEditing] = useState(false);
   const [remarks, setRemarks] = useState('');
 
-  const load = useCallback(() => {
-    if (!id) return;
-    api.op(id).then(setDetail, (err: unknown) => {
-      if (err instanceof ApiError && err.status === 404) setMissing(true);
-    });
+  const { channel } = useDesk();
+  const check = useCallback(async () => {
+    if (!id) return false;
+    try {
+      const fresh = await api.op(id);
+      // A slow check must not overwrite a newer copy returned by an action.
+      setDetail((held) => (held && held.op.id === fresh.op.id && held.op.version > fresh.op.version ? held : fresh));
+      return true;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setMissing(true);
+        return true;
+      }
+      return false;
+    }
   }, [id]);
-  useEffect(load, [load]);
-  useStream('/api/ops/stream', (data) => {
-    if (data === null || (data as { id?: string }).id === id) load();
-  });
+  useLiveSync(check, channel, !missing);
 
   const act = useCallback<Act>(
     async (action) => {

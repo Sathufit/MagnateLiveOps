@@ -2,18 +2,19 @@
 // on first run. Vessel and company names are fictitious.
 import type { Operation } from '../shared/domain.ts';
 import { applyAction, createOperation } from './actions.ts';
-import { listOps, nextRef, saveOp } from './store.ts';
+import type { Store } from './store.ts';
 
 const ACTOR = 'Ops Desk';
 type Step = [hoursAgo: number, action: Record<string, unknown>];
 
-export function seedIfEmpty(): void {
-  if (listOps().length > 0) return;
+export async function seedSamples(store: Store): Promise<void> {
   const T = Date.now();
+  const refs: string[] = [];
+  for (let i = 0; i < 4; i++) refs.push(await store.nextRef(new Date(T)));
   const at = (hoursAgo: number) => new Date(T - hoursAgo * 3600_000).toISOString();
 
   function build(createdHoursAgo: number, details: Record<string, unknown>, steps: Step[], demo = true): Operation {
-    const op = createOperation(details, nextRef(new Date(T)), ACTOR, at(createdHoursAgo), demo);
+    const op = createOperation(details, refs.shift()!, ACTOR, at(createdHoursAgo), demo);
     for (const [hoursAgo, action] of steps) {
       const now = at(hoursAgo);
       let withTime = action.type === 'milestone.set' && action.state !== 'pending' ? { at: now, ...action } : action;
@@ -22,7 +23,6 @@ export function seedIfEmpty(): void {
       op.updatedAt = now;
       op.version += 1;
     }
-    saveOp(op);
     return op;
   }
 
@@ -70,7 +70,6 @@ export function seedIfEmpty(): void {
   applyAction(a, doc(a, 0, 'received', 'PMF/STEM/4471'), ACTOR, at(24.5));
   applyAction(a, { type: 'details.set', ...detailsOf(a), headline: '', etc: at(-11) }, ACTOR, at(0.6));
   a.feed.sort((x, y) => x.at.localeCompare(y.at));
-  saveOp(a);
 
   /* 2. Delivery under way off Galle, after a short supplier delay. */
   const b = build(
@@ -120,7 +119,6 @@ export function seedIfEmpty(): void {
   applyAction(b, { type: 'details.set', ...detailsOf(b), headline: '', etc: at(-2.5) }, ACTOR, at(0.3));
   b.readiness.supplier = { level: 'ready', note: '', updatedAt: at(5.8) };
   b.feed.sort((x, y) => x.at.localeCompare(y.at));
-  saveOp(b);
 
   /* 3. Weather hold at Hambantota. */
   const c = build(
@@ -155,7 +153,6 @@ export function seedIfEmpty(): void {
   c.readiness.vessel = { level: 'ready', note: 'At anchor, port side to.', updatedAt: at(2.9) };
   c.readiness.supplier = { level: 'ready', note: '', updatedAt: at(4) };
   c.readiness.surveyor = { level: 'standby', note: 'Launch booked, waiting for the barge to close.', updatedAt: at(2) };
-  saveOp(c);
 
   /* 4. Completed bowser delivery at Trincomalee. */
   const d = build(
@@ -198,7 +195,7 @@ export function seedIfEmpty(): void {
   d.documents[4].ref = 'LBS/BDN/20931';
   for (const p of ['vessel', 'supplier', 'craft', 'surveyor'] as const) d.readiness[p] = { level: 'ready', note: '', updatedAt: at(53) };
   d.remarks = 'Delivery completed without incident. Quantity agreed between vessel and supplier figures; no letter of protest issued.';
-  saveOp(d);
+  for (const op of [a, b, c, d]) await store.insertOp(op);
 }
 
 function detailsOf(op: Operation) {

@@ -216,9 +216,16 @@ export const PARTY_KEYS = ['owner', 'charterer', 'trader', 'supplier', 'surveyor
 export interface ShareLink {
   token: string;
   enabled: boolean;
+}
+
+/** How a share link has been used. Kept apart from the operation so viewers never overwrite desk edits. */
+export interface LinkStats {
   opens: number;
   lastOpenedAt?: string;
+  /** Last time an open board checked in; recent means someone is viewing now. */
+  lastSeenAt?: string;
 }
+export const VIEWING_WINDOW_MS = 75_000;
 
 export type OpStatus = 'active' | 'completed' | 'cancelled';
 
@@ -262,6 +269,7 @@ export interface DelayStatus {
 
 export interface BoardOp {
   ref: string;
+  version: number;
   demo: boolean;
   status: OpStatus;
   createdAt: string;
@@ -321,6 +329,7 @@ export function projectView(op: Operation, viewer: Viewer): BoardView {
     delay: delayStatus(op.delays),
     op: {
       ref: op.ref,
+      version: op.version,
       demo: op.demo,
       status: op.status,
       createdAt: op.createdAt,
